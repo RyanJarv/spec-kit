@@ -294,6 +294,10 @@ if [ ${#BRANCH_NAME} -gt $MAX_BRANCH_LENGTH ]; then
 fi
 
 WORKTREE_DIR=""
+if [ "$WORKTREE_MODE" = true ] && [ "$HAS_GIT" = false ]; then
+    echo "Error: --worktree requires a git repository" >&2
+    exit 1
+fi
 if [ "$HAS_GIT" = true ]; then
     if [ "$WORKTREE_MODE" = true ]; then
         # Default worktree base directory to parent of repo root

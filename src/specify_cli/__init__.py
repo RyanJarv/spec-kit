@@ -2049,8 +2049,12 @@ def _load_sandbox_config(repo_root: Path) -> dict:
     config_path = repo_root / ".specify" / "sandbox.json"
     if not config_path.exists():
         return {}
-    with open(config_path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(config_path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        console.print(f"[red]Error:[/red] Failed to read {config_path}: {e}")
+        raise typer.Exit(1)
 
 
 def _get_repo_root() -> Path:
@@ -2097,6 +2101,14 @@ def sandbox_start(
     """Create a worktree, build sandbox image, and start a sandboxed Claude environment."""
     repo_root = _get_repo_root()
     config = _load_sandbox_config(repo_root)
+
+    # Validate token early, before creating any resources
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if not token:
+        console.print("[red]Error:[/red] CLAUDE_CODE_OAUTH_TOKEN environment variable is not set")
+        console.print("Set it before running sandbox start:")
+        console.print("  export CLAUDE_CODE_OAUTH_TOKEN='your-token'")
+        raise typer.Exit(1)
 
     # Resolve Docker image
     image_name = template
@@ -2187,22 +2199,19 @@ def sandbox_start(
         console.print(f"[red]Error:[/red] Sandbox creation failed (exit {e.returncode})")
         raise typer.Exit(1)
 
-    # Provision CLAUDE_CODE_OAUTH_TOKEN
-    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if not token:
-        console.print("[red]Error:[/red] CLAUDE_CODE_OAUTH_TOKEN environment variable is not set")
-        console.print("Set it before running sandbox start:")
-        console.print("  export CLAUDE_CODE_OAUTH_TOKEN='your-token'")
-        raise typer.Exit(1)
-
+    # Provision CLAUDE_CODE_OAUTH_TOKEN via a dedicated env file piped through stdin.
+    # This avoids shell injection — the token never passes through shell interpolation.
     console.print("[cyan]Provisioning auth token...[/cyan]")
     try:
         subprocess.run(
             [
                 "docker", "sandbox", "exec", "-i", sandbox_name,
                 "bash", "-c",
-                f"echo 'export CLAUDE_CODE_OAUTH_TOKEN=\"{token}\"' >> /home/agent/.profile",
+                "cat > /home/agent/.sandbox-env && "
+                "echo '. /home/agent/.sandbox-env' >> /home/agent/.profile",
             ],
+            input=f"export CLAUDE_CODE_OAUTH_TOKEN={shlex.quote(token)}\n",
+            text=True,
             check=True,
         )
     except subprocess.CalledProcessError as e:
