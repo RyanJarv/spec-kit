@@ -2288,6 +2288,196 @@ def sandbox_shell(
         raise typer.Exit(1)
 
 
+@sandbox_app.command("list")
+def sandbox_list():
+    """List active sandboxes and their associated worktrees."""
+    repo_root = _get_repo_root()
+    repo_basename = repo_root.name
+    prefix = f"claude-{repo_basename}-"
+
+    worktrees = _get_worktrees()
+    sandboxes = _get_repo_sandboxes(repo_basename)
+
+    if not sandboxes and len(worktrees) <= 1:
+        console.print("[yellow]No active sandboxes or feature worktrees found.[/yellow]")
+        return
+
+    table = Table(title=f"Sandboxes for {repo_basename}", box=None, padding=(0, 2))
+    table.add_column("Branch", style="cyan")
+    table.add_column("Sandbox", style="green")
+    table.add_column("Worktree Path", style="white")
+    table.add_column("Merged", style="white")
+
+    # Build a combined view: match sandboxes to worktrees by branch name
+    seen_branches: set[str] = set()
+
+    for sb_name in sandboxes:
+        branch = sb_name[len(prefix):]
+        seen_branches.add(branch)
+        wt_path = worktrees.get(branch, "[dim]not found[/dim]")
+        merged = "[green]yes[/green]" if _is_branch_merged(branch) else "[dim]no[/dim]"
+        table.add_row(branch, sb_name, wt_path, merged)
+
+    # Show worktrees that have no sandbox (feature branches only, skip main)
+    for branch, wt_path in worktrees.items():
+        if branch not in seen_branches and branch not in ("main", "master"):
+            merged = "[green]yes[/green]" if _is_branch_merged(branch) else "[dim]no[/dim]"
+            table.add_row(branch, "[dim]none[/dim]", wt_path, merged)
+
+    console.print(table)
+
+
+def _get_worktrees() -> dict[str, str]:
+    """Return a mapping of branch name -> worktree path."""
+    try:
+        result = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            check=True, capture_output=True, text=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return {}
+    worktrees: dict[str, str] = {}
+    current_path = ""
+    for line in result.stdout.splitlines():
+        if line.startswith("worktree "):
+            current_path = line[len("worktree "):]
+        elif line.startswith("branch refs/heads/"):
+            branch = line[len("branch refs/heads/"):]
+            worktrees[branch] = current_path
+    return worktrees
+
+
+def _get_repo_sandboxes(repo_basename: str) -> list[str]:
+    """Return sandbox names that belong to this repo."""
+    prefix = f"claude-{repo_basename}-"
+    try:
+        result = subprocess.run(
+            ["docker", "sandbox", "ls", "--format", "{{.Name}}"],
+            check=True, capture_output=True, text=True,
+        )
+        all_sandboxes = [s.strip() for s in result.stdout.splitlines() if s.strip()]
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return []
+    return [s for s in all_sandboxes if s.startswith(prefix)]
+
+
+def _is_branch_merged(branch_name: str) -> bool:
+    """Check if a branch has been merged into the current HEAD."""
+    try:
+        result = subprocess.run(
+            ["git", "branch", "--merged", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        merged = [b.strip().lstrip("* ") for b in result.stdout.splitlines()]
+        return branch_name in merged
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return False
+
+
+def _remove_one(
+    repo_root: Path,
+    branch_name: Optional[str],
+    sandbox_name: str,
+    worktrees: dict[str, str],
+    force: bool,
+    keep_worktree: bool,
+    keep_sandbox: bool,
+) -> None:
+    """Remove a single sandbox and/or its worktree."""
+    # Check merge status and warn if not merged
+    if branch_name and not force and not _is_branch_merged(branch_name):
+        console.print(f"[yellow]Warning:[/yellow] Branch '{branch_name}' has not been merged")
+        console.print("[yellow]Use --force to remove anyway[/yellow]")
+        return
+
+    removed_sandbox = False
+    removed_worktree = False
+
+    # Remove sandbox
+    if not keep_sandbox:
+        console.print(f"[cyan]Removing sandbox: {sandbox_name}...[/cyan]")
+        result = subprocess.run(
+            ["docker", "sandbox", "rm", sandbox_name],
+            capture_output=True, text=True,
+        )
+        output = (result.stdout + result.stderr).lower()
+        if "not found" in output or result.returncode != 0:
+            console.print(f"[yellow]Warning:[/yellow] Sandbox '{sandbox_name}' not found or already removed")
+        else:
+            removed_sandbox = True
+            console.print(f"[green]Sandbox removed:[/green] {sandbox_name}")
+
+    # Remove worktree
+    worktree_dir = worktrees.get(branch_name, "") if branch_name else ""
+    if not keep_worktree and worktree_dir:
+        console.print(f"[cyan]Removing worktree: {worktree_dir}...[/cyan]")
+        wt_cmd = ["git", "worktree", "remove"]
+        if force:
+            wt_cmd.append("--force")
+        wt_cmd.append(worktree_dir)
+        try:
+            subprocess.run(wt_cmd, check=True, capture_output=True, text=True)
+            removed_worktree = True
+            console.print(f"[green]Worktree removed:[/green] {worktree_dir}")
+        except subprocess.CalledProcessError as e:
+            stderr = e.stderr.strip() if e.stderr else ""
+            if "contains modified or untracked files" in stderr:
+                console.print(f"[yellow]Warning:[/yellow] Worktree has uncommitted changes. Use --force to remove anyway.")
+            else:
+                console.print(f"[yellow]Warning:[/yellow] Could not remove worktree: {stderr}")
+    elif not keep_worktree and branch_name and not worktree_dir:
+        console.print(f"[yellow]Warning:[/yellow] No worktree found for branch '{branch_name}'")
+
+    # Delete the branch if worktree was removed
+    if removed_worktree and branch_name:
+        try:
+            subprocess.run(
+                ["git", "branch", "-d", branch_name],
+                check=True, capture_output=True, text=True,
+            )
+            console.print(f"[green]Branch deleted:[/green] {branch_name}")
+        except subprocess.CalledProcessError:
+            console.print(f"[dim]Branch '{branch_name}' kept (not fully merged or already deleted)[/dim]")
+
+    if not removed_sandbox and not removed_worktree:
+        console.print("[yellow]Nothing was removed.[/yellow]")
+
+
+@sandbox_app.command("remove")
+def sandbox_remove(
+    branch_name: Optional[str] = typer.Argument(None, help="Feature branch to remove sandbox and worktree for"),
+    name: Optional[str] = typer.Option(None, "--name", help="Sandbox name override"),
+    all_sandboxes: bool = typer.Option(False, "--all", help="Remove all sandboxes and worktrees for this repo"),
+    keep_worktree: bool = typer.Option(False, "--keep-worktree", help="Remove sandbox but keep the worktree"),
+    keep_sandbox: bool = typer.Option(False, "--keep-sandbox", help="Remove worktree but keep the sandbox"),
+    force: bool = typer.Option(False, "--force", help="Force removal even if worktree has changes"),
+):
+    """Remove a sandbox and its associated worktree."""
+    repo_root = _get_repo_root()
+    repo_basename = repo_root.name
+    prefix = f"claude-{repo_basename}-"
+    worktrees = _get_worktrees()
+
+    if all_sandboxes:
+        sandboxes = _get_repo_sandboxes(repo_basename)
+        if not sandboxes:
+            console.print("[yellow]No sandboxes found for this repo.[/yellow]")
+            return
+        console.print(f"[cyan]Removing {len(sandboxes)} sandbox(es)...[/cyan]\n")
+        for sb_name in sandboxes:
+            branch = sb_name[len(prefix):]
+            _remove_one(repo_root, branch, sb_name, worktrees, force, keep_worktree, keep_sandbox)
+            console.print()
+        return
+
+    if not branch_name and not name:
+        console.print("[red]Error:[/red] Provide a branch name, --name, or --all")
+        raise typer.Exit(1)
+
+    sandbox_name = name or _derive_sandbox_name(repo_root, branch_name)
+    _remove_one(repo_root, branch_name, sandbox_name, worktrees, force, keep_worktree, keep_sandbox)
+
+
 def main():
     app()
 

@@ -136,6 +136,59 @@ specify sandbox shell
 |--------|-------------|
 | `--name TEXT` | Sandbox name override (skip branch-based name derivation) |
 
+### `specify sandbox list`
+
+Show all sandboxes and worktrees for the current repository.
+
+```bash
+specify sandbox list
+```
+
+Displays a table with:
+
+| Column | Description |
+|--------|-------------|
+| Branch | Feature branch name |
+| Sandbox | Docker sandbox container name |
+| Worktree Path | Path to the git worktree directory |
+| Merged | Whether the branch has been merged into HEAD |
+
+### `specify sandbox remove`
+
+Remove a sandbox, its worktree, and the branch.
+
+```bash
+# Remove a specific feature's sandbox and worktree
+specify sandbox remove 001-user-auth
+
+# Remove all sandboxes for this repo
+specify sandbox remove --all
+
+# Force removal of unmerged branches
+specify sandbox remove 001-user-auth --force
+
+# Remove only the sandbox, keep the worktree
+specify sandbox remove 001-user-auth --keep-worktree
+
+# Remove only the worktree, keep the sandbox
+specify sandbox remove 001-user-auth --keep-sandbox
+
+# Target a sandbox by name instead of branch
+specify sandbox remove --name claude-my-project-001-user-auth
+```
+
+**Options:**
+
+| Option | Description |
+|--------|-------------|
+| `--all` | Remove all sandboxes and worktrees for this repo |
+| `--force` | Force removal even if the branch has not been merged or the worktree has uncommitted changes |
+| `--keep-worktree` | Remove the sandbox but keep the worktree |
+| `--keep-sandbox` | Remove the worktree but keep the sandbox |
+| `--name TEXT` | Target a sandbox by name instead of branch |
+
+By default, `remove` checks whether the branch has been merged. If it has not, it warns and aborts unless `--force` is passed.
+
 ### Sandbox naming convention
 
 Sandbox containers are named `claude-<repo>-<branch>`. For example, if your repo is `my-project` and the branch is `001-user-auth`, the sandbox name is `claude-my-project-001-user-auth`.
@@ -274,24 +327,27 @@ specify sandbox start "Feature B" --template my-sandbox:latest --short-name "fea
 
 ---
 
-## Manual Cleanup
+## Cleanup
 
-Sandbox resources are not automatically cleaned up. When you're done with a feature:
+Use the built-in commands to clean up when you're done with a feature:
 
 ```bash
-# Remove the sandbox container
-docker sandbox rm claude-my-project-001-my-feat
+# List all sandboxes and worktrees
+specify sandbox list
 
-# Remove the worktree and branch
-git worktree remove ../my-project-001-my-feat
-git branch -d 001-my-feat
+# Remove a specific feature's sandbox, worktree, and branch
+specify sandbox remove 001-my-feat
+
+# Remove all sandboxes for this repo
+specify sandbox remove --all
 ```
 
-List active sandboxes and worktrees:
+You can also clean up manually with Docker and git commands:
 
 ```bash
-docker sandbox ls
-git worktree list
+docker sandbox rm claude-my-project-001-my-feat
+git worktree remove ../my-project-001-my-feat
+git branch -d 001-my-feat
 ```
 
 ---
