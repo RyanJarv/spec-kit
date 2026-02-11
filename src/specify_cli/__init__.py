@@ -1279,6 +1279,19 @@ def init(
     console.print()
     console.print(enhancements_panel)
 
+    sandbox_lines = [
+        "Use Docker sandboxes to run Claude in isolated environments with git worktrees",
+        "",
+        f"○ [cyan]specify sandbox start[/] [bright_black]<description>[/bright_black] - Create worktree, build sandbox, and start Claude",
+        f"  [bright_black]Options: --short-name, --number, --template, --name, --no-start[/bright_black]",
+        f"○ [cyan]specify sandbox shell[/] [bright_black][branch-name][/bright_black] - Open a bash shell in an existing sandbox",
+        "",
+        "Requires: Docker, [cyan].specify/sandbox.json[/] config, and [cyan]CLAUDE_CODE_OAUTH_TOKEN[/] env var",
+    ]
+    sandbox_panel = Panel("\n".join(sandbox_lines), title="Sandbox Commands", border_style="cyan", padding=(1, 2))
+    console.print()
+    console.print(sandbox_panel)
+
 @app.command()
 def check():
     """Check that all required tools are installed."""
