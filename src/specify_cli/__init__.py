@@ -2034,6 +2034,231 @@ def extension_disable(
     console.print(f"To re-enable: specify extension enable {extension}")
 
 
+# ===== Sandbox Commands =====
+
+sandbox_app = typer.Typer(
+    name="sandbox",
+    help="Manage Docker sandbox environments for feature worktrees",
+    add_completion=False,
+)
+app.add_typer(sandbox_app, name="sandbox")
+
+
+def _load_sandbox_config(repo_root: Path) -> dict:
+    """Load .specify/sandbox.json config. Returns empty dict if not found."""
+    config_path = repo_root / ".specify" / "sandbox.json"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _get_repo_root() -> Path:
+    """Get the git repository root directory."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            check=True, capture_output=True, text=True,
+        )
+        return Path(result.stdout.strip())
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("[red]Error:[/red] Not inside a git repository")
+        raise typer.Exit(1)
+
+
+def _get_current_branch() -> str:
+    """Get the current git branch name."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            check=True, capture_output=True, text=True,
+        )
+        return result.stdout.strip()
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        console.print("[red]Error:[/red] Could not determine current branch")
+        raise typer.Exit(1)
+
+
+def _derive_sandbox_name(repo_root: Path, branch_name: str) -> str:
+    """Derive a sandbox container name from repo basename and branch name."""
+    repo_basename = repo_root.name
+    return f"claude-{repo_basename}-{branch_name}"
+
+
+@sandbox_app.command("start")
+def sandbox_start(
+    feature_description: str = typer.Argument(help="Description of the feature to work on"),
+    short_name: Optional[str] = typer.Option(None, "--short-name", help="Custom short name for the branch"),
+    number: Optional[str] = typer.Option(None, "--number", help="Specify branch number manually"),
+    template: Optional[str] = typer.Option(None, "--template", help="Override Docker template image"),
+    name: Optional[str] = typer.Option(None, "--name", help="Override sandbox container name"),
+    no_start: bool = typer.Option(False, "--no-start", help="Create sandbox but don't launch Claude"),
+):
+    """Create a worktree, build sandbox image, and start a sandboxed Claude environment."""
+    repo_root = _get_repo_root()
+    config = _load_sandbox_config(repo_root)
+
+    # Resolve Docker image
+    image_name = template
+    dockerfile = None
+    if not image_name:
+        dockerfile = config.get("dockerfile")
+        if not dockerfile:
+            console.print("[red]Error:[/red] No Dockerfile configured.")
+            console.print("Either provide --template or create .specify/sandbox.json with a 'dockerfile' key.")
+            raise typer.Exit(1)
+        image_name = config.get("image_name", "speckit-sandbox:latest")
+
+    # Build Docker image if using a Dockerfile
+    if dockerfile:
+        dockerfile_path = repo_root / dockerfile
+        if not dockerfile_path.exists():
+            console.print(f"[red]Error:[/red] Dockerfile not found at {dockerfile_path}")
+            raise typer.Exit(1)
+        console.print(f"[cyan]Building sandbox image from {dockerfile}...[/cyan]")
+        try:
+            subprocess.run(
+                ["docker", "build", "-f", str(dockerfile_path), "-t", image_name, str(repo_root)],
+                check=True,
+            )
+        except subprocess.CalledProcessError as e:
+            console.print(f"[red]Error:[/red] Docker build failed (exit {e.returncode})")
+            raise typer.Exit(1)
+        console.print(f"[green]Image built:[/green] {image_name}")
+
+    # Create worktree via create-new-feature.sh
+    script_path = repo_root / "scripts" / "bash" / "create-new-feature.sh"
+    if not script_path.exists():
+        # Try .specify path as fallback
+        script_path = repo_root / ".specify" / "scripts" / "bash" / "create-new-feature.sh"
+    if not script_path.exists():
+        console.print("[red]Error:[/red] create-new-feature.sh not found")
+        raise typer.Exit(1)
+
+    cmd = ["bash", str(script_path), "--worktree", "--json"]
+    if short_name:
+        cmd.extend(["--short-name", short_name])
+    if number:
+        cmd.extend(["--number", number])
+    cmd.append(feature_description)
+
+    console.print("[cyan]Creating worktree...[/cyan]")
+    try:
+        result = subprocess.run(cmd, check=True, capture_output=True, text=True, cwd=str(repo_root))
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Worktree creation failed")
+        if e.stderr:
+            console.print(f"[red]{e.stderr.strip()}[/red]")
+        raise typer.Exit(1)
+
+    # Parse JSON output
+    try:
+        feature_info = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        console.print(f"[red]Error:[/red] Could not parse create-new-feature.sh output")
+        console.print(f"[dim]Output: {result.stdout.strip()}[/dim]")
+        raise typer.Exit(1)
+
+    branch_name = feature_info["BRANCH_NAME"]
+    worktree_dir = feature_info.get("WORKTREE_DIR", "")
+
+    console.print(f"[green]Worktree created:[/green] {branch_name}")
+    if worktree_dir:
+        console.print(f"[green]Worktree directory:[/green] {worktree_dir}")
+
+    # Derive sandbox name
+    sandbox_name = name or _derive_sandbox_name(repo_root, branch_name)
+
+    # Create Docker sandbox
+    console.print(f"[cyan]Creating sandbox: {sandbox_name}...[/cyan]")
+    sandbox_create_cmd = [
+        "docker", "sandbox", "create",
+        "--load-local-template",
+        "-t", image_name,
+        "--name", sandbox_name,
+        "claude",
+    ]
+    if worktree_dir:
+        sandbox_create_cmd.append(worktree_dir)
+
+    try:
+        subprocess.run(sandbox_create_cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Sandbox creation failed (exit {e.returncode})")
+        raise typer.Exit(1)
+
+    # Provision CLAUDE_CODE_OAUTH_TOKEN
+    token = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if not token:
+        console.print("[red]Error:[/red] CLAUDE_CODE_OAUTH_TOKEN environment variable is not set")
+        console.print("Set it before running sandbox start:")
+        console.print("  export CLAUDE_CODE_OAUTH_TOKEN='your-token'")
+        raise typer.Exit(1)
+
+    console.print("[cyan]Provisioning auth token...[/cyan]")
+    try:
+        subprocess.run(
+            [
+                "docker", "sandbox", "exec", "-i", sandbox_name,
+                "bash", "-c",
+                f"echo 'export CLAUDE_CODE_OAUTH_TOKEN=\"{token}\"' >> /home/agent/.profile",
+            ],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Token provisioning failed (exit {e.returncode})")
+        raise typer.Exit(1)
+
+    # Run provision hook if configured
+    provision_hook = config.get("provision_hook")
+    if provision_hook:
+        hook_path = repo_root / provision_hook
+        if hook_path.exists():
+            console.print(f"[cyan]Running provision hook: {provision_hook}...[/cyan]")
+            try:
+                subprocess.run(
+                    [str(hook_path), sandbox_name, worktree_dir],
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                console.print(f"[yellow]Warning:[/yellow] Provision hook exited with code {e.returncode}")
+
+    console.print(f"[green]Sandbox ready:[/green] {sandbox_name}")
+
+    # Start Claude in the sandbox unless --no-start
+    if not no_start:
+        console.print(f"[cyan]Starting Claude in sandbox...[/cyan]")
+        try:
+            subprocess.run(["docker", "sandbox", "run", sandbox_name], check=True)
+        except subprocess.CalledProcessError:
+            raise typer.Exit(1)
+
+
+@sandbox_app.command("shell")
+def sandbox_shell(
+    branch_name: Optional[str] = typer.Argument(None, help="Feature branch name (default: current branch)"),
+    name: Optional[str] = typer.Option(None, "--name", help="Sandbox name override"),
+):
+    """Open a bash shell in an existing sandbox."""
+    repo_root = _get_repo_root()
+
+    if not branch_name:
+        branch_name = _get_current_branch()
+
+    sandbox_name = name or _derive_sandbox_name(repo_root, branch_name)
+
+    console.print(f"[cyan]Opening shell in sandbox: {sandbox_name}[/cyan]")
+    try:
+        subprocess.run(
+            ["docker", "sandbox", "exec", "-it", sandbox_name, "bash"],
+            check=True,
+        )
+    except subprocess.CalledProcessError as e:
+        console.print(f"[red]Error:[/red] Could not open shell in sandbox '{sandbox_name}' (exit {e.returncode})")
+        console.print("Check that the sandbox exists: docker sandbox ls")
+        raise typer.Exit(1)
+
+
 def main():
     app()
 

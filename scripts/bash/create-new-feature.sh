@@ -5,13 +5,31 @@ set -e
 JSON_MODE=false
 SHORT_NAME=""
 BRANCH_NUMBER=""
+WORKTREE_MODE=false
+WORKTREE_BASE_DIR=""
 ARGS=()
 i=1
 while [ $i -le $# ]; do
     arg="${!i}"
     case "$arg" in
-        --json) 
-            JSON_MODE=true 
+        --json)
+            JSON_MODE=true
+            ;;
+        --worktree)
+            WORKTREE_MODE=true
+            ;;
+        --worktree-base-dir)
+            if [ $((i + 1)) -gt $# ]; then
+                echo 'Error: --worktree-base-dir requires a value' >&2
+                exit 1
+            fi
+            i=$((i + 1))
+            next_arg="${!i}"
+            if [[ "$next_arg" == --* ]]; then
+                echo 'Error: --worktree-base-dir requires a value' >&2
+                exit 1
+            fi
+            WORKTREE_BASE_DIR="$next_arg"
             ;;
         --short-name)
             if [ $((i + 1)) -gt $# ]; then
@@ -40,22 +58,26 @@ while [ $i -le $# ]; do
             fi
             BRANCH_NUMBER="$next_arg"
             ;;
-        --help|-h) 
-            echo "Usage: $0 [--json] [--short-name <name>] [--number N] <feature_description>"
+        --help|-h)
+            echo "Usage: $0 [--json] [--short-name <name>] [--number N] [--worktree] [--worktree-base-dir <dir>] <feature_description>"
             echo ""
             echo "Options:"
-            echo "  --json              Output in JSON format"
-            echo "  --short-name <name> Provide a custom short name (2-4 words) for the branch"
-            echo "  --number N          Specify branch number manually (overrides auto-detection)"
-            echo "  --help, -h          Show this help message"
+            echo "  --json                    Output in JSON format"
+            echo "  --short-name <name>       Provide a custom short name (2-4 words) for the branch"
+            echo "  --number N                Specify branch number manually (overrides auto-detection)"
+            echo "  --worktree                Use git worktree instead of git checkout -b"
+            echo "  --worktree-base-dir <dir> Base directory for worktrees (default: parent of repo root)"
+            echo "  --help, -h                Show this help message"
             echo ""
             echo "Examples:"
             echo "  $0 'Add user authentication system' --short-name 'user-auth'"
             echo "  $0 'Implement OAuth2 integration for API' --number 5"
+            echo "  $0 --worktree 'Add parallel feature' --short-name 'parallel'"
+            echo "  $0 --worktree --worktree-base-dir /tmp/worktrees 'Sandbox feature'"
             exit 0
             ;;
-        *) 
-            ARGS+=("$arg") 
+        *)
+            ARGS+=("$arg")
             ;;
     esac
     i=$((i + 1))
@@ -271,13 +293,28 @@ if [ ${#BRANCH_NAME} -gt $MAX_BRANCH_LENGTH ]; then
     >&2 echo "[specify] Truncated to: $BRANCH_NAME (${#BRANCH_NAME} bytes)"
 fi
 
+WORKTREE_DIR=""
 if [ "$HAS_GIT" = true ]; then
-    git checkout -b "$BRANCH_NAME"
+    if [ "$WORKTREE_MODE" = true ]; then
+        # Default worktree base directory to parent of repo root
+        if [ -z "$WORKTREE_BASE_DIR" ]; then
+            WORKTREE_BASE_DIR="$(dirname "$REPO_ROOT")"
+        fi
+        WORKTREE_DIR="$WORKTREE_BASE_DIR/$(basename "$REPO_ROOT")-$BRANCH_NAME"
+        git worktree add "$WORKTREE_DIR" -b "$BRANCH_NAME"
+    else
+        git checkout -b "$BRANCH_NAME"
+    fi
 else
     >&2 echo "[specify] Warning: Git repository not detected; skipped branch creation for $BRANCH_NAME"
 fi
 
-FEATURE_DIR="$SPECS_DIR/$BRANCH_NAME"
+# When using worktree mode, create specs inside the worktree
+if [ "$WORKTREE_MODE" = true ] && [ -n "$WORKTREE_DIR" ]; then
+    FEATURE_DIR="$WORKTREE_DIR/specs/$BRANCH_NAME"
+else
+    FEATURE_DIR="$SPECS_DIR/$BRANCH_NAME"
+fi
 mkdir -p "$FEATURE_DIR"
 
 TEMPLATE="$REPO_ROOT/.specify/templates/spec-template.md"
@@ -288,10 +325,17 @@ if [ -f "$TEMPLATE" ]; then cp "$TEMPLATE" "$SPEC_FILE"; else touch "$SPEC_FILE"
 export SPECIFY_FEATURE="$BRANCH_NAME"
 
 if $JSON_MODE; then
-    printf '{"BRANCH_NAME":"%s","SPEC_FILE":"%s","FEATURE_NUM":"%s"}\n' "$BRANCH_NAME" "$SPEC_FILE" "$FEATURE_NUM"
+    if [ -n "$WORKTREE_DIR" ]; then
+        printf '{"BRANCH_NAME":"%s","SPEC_FILE":"%s","FEATURE_NUM":"%s","WORKTREE_DIR":"%s"}\n' "$BRANCH_NAME" "$SPEC_FILE" "$FEATURE_NUM" "$WORKTREE_DIR"
+    else
+        printf '{"BRANCH_NAME":"%s","SPEC_FILE":"%s","FEATURE_NUM":"%s"}\n' "$BRANCH_NAME" "$SPEC_FILE" "$FEATURE_NUM"
+    fi
 else
     echo "BRANCH_NAME: $BRANCH_NAME"
     echo "SPEC_FILE: $SPEC_FILE"
     echo "FEATURE_NUM: $FEATURE_NUM"
+    if [ -n "$WORKTREE_DIR" ]; then
+        echo "WORKTREE_DIR: $WORKTREE_DIR"
+    fi
     echo "SPECIFY_FEATURE environment variable set to: $BRANCH_NAME"
 fi
