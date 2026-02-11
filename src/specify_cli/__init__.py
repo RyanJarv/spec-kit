@@ -1290,6 +1290,9 @@ def check():
     tracker.add("git", "Git version control")
     git_ok = check_tool("git", tracker=tracker)
 
+    tracker.add("docker", "Docker (for sandbox support)")
+    docker_ok = check_tool("docker", tracker=tracker)
+
     agent_results = {}
     for agent_key, agent_config in AGENT_CONFIG.items():
         agent_name = agent_config["name"]
@@ -1317,6 +1320,9 @@ def check():
 
     if not git_ok:
         console.print("[dim]Tip: Install git for repository management[/dim]")
+
+    if not docker_ok:
+        console.print("[dim]Tip: Install Docker for sandbox support (specify sandbox)[/dim]")
 
     if not any(agent_results.values()):
         console.print("[dim]Tip: Install an AI assistant for the best experience[/dim]")
