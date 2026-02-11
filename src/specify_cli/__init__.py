@@ -439,6 +439,7 @@ app = typer.Typer(
     add_completion=False,
     invoke_without_command=True,
     cls=BannerGroup,
+    context_settings={"help_option_names": ["-h", "--help"]},
 )
 
 def show_banner():
