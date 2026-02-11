@@ -12,6 +12,12 @@
     - name: Upgrade
       href: upgrade.md
 
+# Advanced features
+- name: Advanced
+  items:
+    - name: Docker Sandboxes
+      href: sandbox.md
+
 # Development workflows
 - name: Development
   items:

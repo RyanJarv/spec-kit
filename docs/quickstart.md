@@ -160,5 +160,6 @@ Finally, implement the solution:
 ## Next Steps
 
 - Read the [complete methodology](../spec-driven.md) for in-depth guidance
+- Set up [Docker sandboxes](sandbox.md) for parallel feature work in isolated environments
 - Check out [more examples](../templates) in the repository
 - Explore the [source code on GitHub](https://github.com/github/spec-kit)

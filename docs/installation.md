@@ -67,10 +67,19 @@ uvx --from git+https://github.com/github/spec-kit.git specify init <project_name
 After initialization, you should see the following commands available in your AI agent:
 
 - `/speckit.specify` - Create specifications
-- `/speckit.plan` - Generate implementation plans  
+- `/speckit.plan` - Generate implementation plans
 - `/speckit.tasks` - Break down into actionable tasks
 
 The `.specify/scripts` directory will contain both `.sh` and `.ps1` scripts.
+
+### Optional: Docker Sandbox Support
+
+To run Claude Code in isolated sandbox environments with git worktrees, you also need:
+
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) with sandbox support
+- A `CLAUDE_CODE_OAUTH_TOKEN` environment variable
+
+See the [Docker Sandbox Guide](sandbox.md) for setup and usage.
 
 ## Troubleshooting
 
